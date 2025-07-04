@@ -3,6 +3,7 @@ type Node<T> = graph.Node<T>
 local create_source_node = graph.create_source_node
 local push_child_to_scope = graph.push_child_to_scope
 local update_descendants = graph.update_descendants
+local bump_update_id = graph.bump_update_id
 
 export type Source<T> = (() -> T) & ((value: T) -> T)
 
@@ -21,7 +22,7 @@ local function source<T>(initial_value: T): Source<T>
         end
 
         node.cache = v
-        graph.bump_update_id()
+        bump_update_id()
         update_descendants(node)
         return v
     end

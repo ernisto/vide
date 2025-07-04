@@ -8,6 +8,7 @@ local assert_stable_scope = graph.assert_stable_scope
 local evaluate_node = graph.evaluate_node
 local update_descendants = graph.update_descendants
 local push_child_to_scope = graph.push_child_to_scope
+local bump_update_id = graph.bump_update_id
 
 local UPDATE_RATE = 120
 local TOLERANCE = 0.001
@@ -264,7 +265,7 @@ local function step_springs(dt: number)
 end
 
 local function update_spring_sources()
-    graph.bump_update_id()
+    bump_update_id()
     batch(function()
         for data, output in springs do
             local x0_123, x1_123, v_123,
