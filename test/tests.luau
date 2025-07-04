@@ -5,8 +5,8 @@ local mock = require "./mock"
 local Instance, Signal = mock.Instance, mock.Signal
 local Vector2, UDim2 = mock.Vector2, mock.UDim2
 
-local vide = require "../../vide"
-local graph = require "../../vide/src/graph"
+local vide = require "../src/lib"
+local graph = require "../src/graph"
 type Node<T> = graph.Node<T>
 
 type Map<K, V> = { [K] : V }
@@ -2473,7 +2473,7 @@ TEST("context()", function()
 end)
 
 TEST("nested effects cases", function()
-    local vide = require "../../vide"
+    local vide = require "../src/lib"
     local source = vide.source
     local effect = vide.effect
     local untrack = vide.untrack
