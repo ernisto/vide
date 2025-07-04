@@ -43,7 +43,6 @@ local function efn(err: string)
 end
 
 local function ycall<T, U>(fn: (T) -> U, arg: T): (boolean, string|U)
-
     local thread = coroutine.create(xpcall)
     --local function efn(err: string) return debug.traceback(err, 3) end
     local resume_ok, run_ok, result = coroutine.resume(thread, fn, efn, arg)
@@ -127,8 +126,8 @@ local function unparent<T>(node: Node<T>)
 
     for i, parent in parents do
         find_and_swap_pop(parent, node)
-        parents[i] = nil
     end
+    table.clear(parents)
 end
 
 local function destroy<T>(node: Node<T>)
@@ -170,7 +169,7 @@ local function evaluate_node<T>(node: Node<T>)
     destroy_owned(node)
 
     push_scope(node)
-    local ok, new_value = (if flags.strict then ycall else pcall :: any)(node.effect :: (T) -> T, node.cache)
+    local ok, new_value = (if flags.strict then ycall else pcall :: any)(node.effect :: (T) -> T, cur_value)
     pop_scope()
 
     if not ok then
@@ -187,19 +186,25 @@ end
 
 function queue_children_for_update<T>(node: SourceNode<T>)
     local queue_index = update_queue.n
-    local child_index = 1
 
-    repeat
-        local child = node[child_index]
-        if not child then break end
+    for i = 1, #node do
+        local child = node[i]
+        node[i] = nil
 
-        if child.last_eval_update_id == update_id then child_index += 1; continue end
-        child.higher_parent_update_id = update_id
+        local parents = child.parents
+        if #parents == 0 then continue end
 
         queue_index += 1
         update_queue[queue_index] = child
-        unparent(child)
-    until false
+        child.higher_parent_update_id = update_id
+
+        for _, parent in parents do
+            if parent ~= node then
+                find_and_swap_pop(parent, child)
+            end
+        end
+        table.clear(parents)
+    end
 
     update_queue.n = queue_index
 end
