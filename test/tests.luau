@@ -1385,7 +1385,7 @@ TEST("switch()", wrap_root(function()
     local scopes = require "../src/graph".scopes
         local input = source(1)
 
-        local n0 = scopes.n
+        local n0 = #scopes
 
         local ok = pcall(function()
             switch(input) {
@@ -1395,7 +1395,7 @@ TEST("switch()", wrap_root(function()
 
         CHECK(not ok)
 
-        local n1 = scopes.n
+        local n1 = #scopes
 
         CHECK(n0 == n1)
     end
@@ -1545,7 +1545,7 @@ TEST("indexes()", wrap_root(function()
 
         local input = source { 1 }
 
-        local n0 = scopes.n
+        local n0 = #scopes
 
         local ok = pcall(function()
             indexes(input, function()
@@ -1556,7 +1556,7 @@ TEST("indexes()", wrap_root(function()
 
         CHECK(not ok)
 
-        local n1 = scopes.n
+        local n1 = #scopes
 
         CHECK(n0 == n1)
     end
@@ -1724,7 +1724,7 @@ TEST("values()", wrap_root(function()
 
         local input = source { 1 }
 
-        local n0 = scopes.n
+        local n0 = #scopes
 
         local ok = pcall(function()
             values(input, function()
@@ -1735,7 +1735,7 @@ TEST("values()", wrap_root(function()
 
         CHECK(not ok)
 
-        local n1 = scopes.n
+        local n1 = #scopes
 
         CHECK(n0 == n1)
     end

@@ -56,8 +56,18 @@ local function ycall<T, U>(fn: (T) -> U, arg: T): (boolean, string|U)
     return run_ok, result
 end
 
+local scope: Node<any>?
+local function push_scope<T>(node: Node<T>)
+    table.insert(scopes, scope :: any)
+    scope = node
+end
+
+local function pop_scope()
+    scope = table.remove(scopes)
+end
+
 local function get_scope(): Node<unknown>?
-    return scopes[scopes.n]
+    return scope
 end
 
 local function bump_update_id()
@@ -66,8 +76,6 @@ local function bump_update_id()
 end
 
 local function assert_stable_scope(): Node<unknown>
-    local scope = get_scope()
-
     if not scope then
         local caller_name = debug.info(2, "n")
         return error(`cannot use {caller_name}() outside a stable or reactive scope`, 0)
@@ -81,18 +89,6 @@ end
 local function push_child<T>(parent: SourceNode<any>, child: Node<any>)
     table.insert(parent, child)
     table.insert(child.parents, parent)
-end
-
-local function push_scope<T>(node: Node<T>)
-    local n = scopes.n + 1
-    scopes.n = n
-    scopes[n] = node
-end
-
-local function pop_scope()
-    local n = scopes.n
-    scopes.n = n - 1
-    scopes[n] = nil
 end
 
 local function push_cleanup<T>(node: Node<T>, cleanup: () -> ())
@@ -237,7 +233,6 @@ local function update_descendants<T>(root: SourceNode<T>)
 end
 
 local function push_child_to_scope<T>(node: SourceNode<T>)
-    local scope = get_scope()
     if scope and scope.effect then -- do not track nodes with no effect
         push_child(node, scope)
     end
