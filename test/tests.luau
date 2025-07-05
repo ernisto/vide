@@ -143,6 +143,7 @@ TEST("graph", function()
         end
 
         push_scope(c); assert(type(c.effect) == "function" and c.effect)(NIL); pop_scope()
+        c.parent_index = 1
 
         bump_update_id()
         update_descendants(a)

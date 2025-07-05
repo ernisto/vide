@@ -20,6 +20,7 @@ export type Node<T> =  {
     owner: Node<T> | false,
 
     parents: { SourceNode<T> },
+    parent_index: number,
     [number]: Node<T> -- children
 }
 
@@ -86,9 +87,25 @@ local function assert_stable_scope(): Node<unknown>
     return scope
 end
 
+local function find_and_swap_pop<T>(t: { T }, v: T)
+    local i = table.find(t, v) :: number
+    local n = #t
+    t[i] = t[n]
+    t[n] = nil
+end
+
 local function push_child<T>(parent: SourceNode<any>, child: Node<any>)
+    local parent_index = child.parent_index
+    local parents = child.parents
+
+    child.parent_index = parent_index + 1
+    local previous_parent = parents[parent_index]
+
+    if previous_parent == parent then return end
+    parents[parent_index] = parent
+
+    if previous_parent then find_and_swap_pop(previous_parent, child) end
     table.insert(parent, child)
-    table.insert(child.parents, parent)
 end
 
 local function push_cleanup<T>(node: Node<T>, cleanup: () -> ())
@@ -108,13 +125,6 @@ local function flush_cleanups<T>(node: Node<T>)
 
         table.clear(node.cleanups)
     end
-end
-
-local function find_and_swap_pop<T>(t: { T }, v: T)
-    local i = table.find(t, v) :: number
-    local n = #t
-    t[i] = t[n]
-    t[n] = nil
 end
 
 local function unparent<T>(node: Node<T>)
@@ -168,6 +178,14 @@ local function evaluate_node<T>(node: Node<T>)
     local ok, new_value = (if flags.strict then ycall else pcall :: any)(node.effect :: (T) -> T, cur_value)
     pop_scope()
 
+    local parents = node.parents
+    for i = node.parent_index, #parents do
+        local parent = parents[i]
+        find_and_swap_pop(parent, node)
+        parents[i] = nil
+    end
+    node.parent_index = 1
+
     if not ok then
         table.clear(update_queue)
         update_queue.n = 0
@@ -185,21 +203,10 @@ function queue_children_for_update<T>(node: SourceNode<T>)
 
     for i = 1, #node do
         local child = node[i]
-        node[i] = nil
-
-        local parents = child.parents
-        if #parents == 0 then continue end
 
         queue_index += 1
         update_queue[queue_index] = child
         child.higher_parent_update_id = update_id
-
-        for _, parent in parents do
-            if parent ~= node then
-                find_and_swap_pop(parent, child)
-            end
-        end
-        table.clear(parents)
     end
 
     update_queue.n = queue_index
@@ -251,6 +258,7 @@ local function create_node<T>(owner: false | Node<any>, effect: false | (T) -> T
         owner = owner,
         owned = false,
 
+        parent_index = 1,
         parents = {},
     }
 
