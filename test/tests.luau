@@ -69,7 +69,7 @@ TEST("graph", function()
     local push_parent = graph.push_parent
     local evaluate_node = graph.evaluate_node
     local update_descendants = graph.update_descendants
-    local push_child = graph.push_child
+    local push_child = graph.link_parent
     local get_scope = graph.get_scope
     local push_scope = graph.push_scope
     local pop_scope = graph.pop_scope
