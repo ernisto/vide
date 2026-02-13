@@ -42,6 +42,17 @@ local function weak<T>(t: T & {}): T
     return t
 end
 
+local q = {}
+local function wait()
+    table.insert(q, coroutine.running())
+    coroutine.yield()
+end
+local function resume()
+    local t = table.remove(q, 1)
+    if t then assert(coroutine.resume(t)) end
+    return t
+end
+
 local function wrap_root(fn: () -> ())
     return function()
         local destroy = vide.mount(fn :: any)
@@ -629,6 +640,119 @@ TEST("effect()", wrap_root(function()
         CHECK(count == 2)
     end
 end))
+
+TEST("async derive()", function()
+    -- we cant create a scope here, because of yielding simulation
+    local owner = graph.create_node(false, false, false)
+    local function derive(effect: () -> any): (() -> any, Node<any>)
+        local n = graph.create_node(graph.get_scope() or owner, effect, false)
+        graph.evaluate_node(n)
+        return function()
+            graph.push_parent(n)
+            return if n.ok then n.cache else error(n.cache)
+        end, n
+    end
+
+    do CASE "save success and error"
+        local a = source(1 :: number?)
+
+        local c, _c
+        c, _c = derive(function()
+            return assert(a())
+        end)
+
+        CHECK(_c.ok and _c.cache == 1)
+
+        local success, val = pcall(c)
+        CHECK(success and val == 1)
+
+        a(nil)
+        CHECK(not _c.ok and _c.cache:match('assertion failed'))
+
+        local success2, err = pcall(c)
+        CHECK(not success2 and err:match('assertion failed'))
+    end
+
+    do CASE "capture scope when yield"
+        local a = source(1)
+
+        local c, _c
+        c, _c = derive(function()
+            a()
+            wait()
+            return graph.get_scope()
+        end)
+        CHECK(_c.pending and c() == false)
+
+        resume()
+        CHECK(not _c.pending and c() == _c)
+
+        a(2)
+        CHECK(_c.pending and c() == _c)
+
+        resume()
+        CHECK(not _c.pending and c() == _c)
+    end
+
+    do CASE "return the last processed computation"
+        local a = source(1)
+
+        local c, _c = derive(function(): string
+            wait()
+            return tostring(a())
+        end)
+
+        CHECK(_c.pending and c() == false)
+
+        resume()
+        CHECK(not _c.pending and c() == "1")
+
+        a(2)
+        CHECK(_c.pending and c() == "1")
+
+        resume()
+        CHECK(not _c.pending and c() == "2")
+    end
+
+    do CASE "cancel pending if get another update"
+        local a = source(1)
+        local done_count = 0
+
+        local c, _c = derive(function(): string
+            wait()
+            done_count += 1
+            return tostring(a())
+        end)
+
+        a(2)
+        CHECK(_c.pending and c() == false)
+
+        resume()
+        CHECK(not _c.pending and c() == "2")
+
+        resume()
+        CHECK(not _c.pending and c() == "2")
+
+        CHECK(done_count == 1)
+    end
+
+    do CASE "garbage collection"
+        local a = source(1)
+
+        local _b = derive(function()
+            wait()
+            return a()
+        end)
+
+        resume()
+        _b = NIL
+
+        local wref = weak { a }
+
+        gc()
+        CHECK(wref[1])
+    end
+end)
 
 TEST("cleanup()", wrap_root(function()
     do CASE "root cleanup"
@@ -1422,25 +1546,6 @@ TEST("switch()", wrap_root(function()
         CHECK(owner_count == 0)
     end
 
-    do CASE "reactive stack resets after error"
-    local scopes = require "../src/graph".scopes
-        local input = source(1)
-
-        local n0 = scopes.n
-
-        local ok = pcall(function()
-            switch(input) {
-                error :: any
-            }
-        end)
-
-        CHECK(not ok)
-
-        local n1 = scopes.n
-
-        CHECK(n0 == n1)
-    end
-
     do CASE "strict"
         vide.strict = true
 
@@ -1580,27 +1685,6 @@ TEST("indexes()", wrap_root(function()
         CHECK(count[1] == 0)
         CHECK(count[2] == 0)
         CHECK(count[3] == 0)
-    end
-
-    do CASE "reactive stack resets after error"
-        local scopes = require "../src/graph".scopes
-
-        local input = source { 1 }
-
-        local n0 = scopes.n
-
-        local ok = pcall(function()
-            indexes(input, function()
-                error("")
-                return NIL
-            end)
-        end)
-
-        CHECK(not ok)
-
-        local n1 = scopes.n
-
-        CHECK(n0 == n1)
     end
 
     -- practical example based on the graph - recursive update test
@@ -1829,27 +1913,6 @@ TEST("values()", wrap_root(function()
         CHECK(count[1] == 0)
         CHECK(count[2] == 0)
         CHECK(count[3] == 0)
-    end
-
-    do CASE "reactive stack resets after error"
-        local scopes = require "../src/graph".scopes
-
-        local input = source { 1 }
-
-        local n0 = scopes.n
-
-        local ok = pcall(function()
-            values(input, function()
-                error("")
-                return NIL
-            end)
-        end)
-
-        CHECK(not ok)
-
-        local n1 = scopes.n
-
-        CHECK(n0 == n1)
     end
 
     do CASE "delay"
@@ -2877,32 +2940,6 @@ end))
 
 TEST("strict", wrap_root(function()
     vide.strict = true
-
-    do CASE "error on derived callback yield"
-        local src = source(1)
-
-        local ok = pcall(function()
-            local _derived = derive(function()
-                coroutine.yield()
-                return src()
-            end)
-        end)
-
-        CHECK(not ok)
-    end
-
-    do CASE "error on effecter callback yield"
-        local src = source(1)
-
-        local ok = pcall(function()
-            effect(function()
-                coroutine.yield()
-                src()
-            end)
-        end)
-
-        CHECK(not ok)
-    end
 
     do CASE "values() error if duplicate"
         local src = source { 1, 2, 1 }

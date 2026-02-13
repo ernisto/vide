@@ -12,7 +12,10 @@ export type SourceNode<T> = {
 export type Node<T> =  {
     cache: T,
     effect: NO_SPARSE | (T) -> T,
-    cleanups: NO_SPARSE | { Node<T> | () -> () },
+    cleanups: NO_SPARSE | { Node<T> | (Node<T>) -> () },
+
+    ok: boolean,
+    pending: NO_SPARSE | thread,
 
     context: NO_SPARSE | { [number]: unknown },
 
@@ -23,7 +26,9 @@ export type Node<T> =  {
     [number]: Node<T> -- children
 }
 
-local scopes = { n = 0 } :: { [number]: Node<any>, n: number } -- scopes stack
+type scope_stack = { [number]: Node<any>, n: number }
+local thread_stacks: { [thread]: scope_stack } = {}
+local sync_stack: scope_stack = { n = 0 }
 
 local function efn(err: string)
     local trace = debug.traceback(err, 2)
@@ -38,23 +43,9 @@ local function efn(err: string)
 return trace
 end
 
-local function ycall<T, U>(fn: (T) -> U, arg: T): (boolean, string|U)
-
-    local thread = coroutine.create(xpcall)
-    --local function efn(err: string) return debug.traceback(err, 3) end
-    local resume_ok, run_ok, result = coroutine.resume(thread, fn, efn, arg)
-
-    assert(resume_ok)
-        
-    if coroutine.status(thread) ~= "dead" then
-        return false, debug.traceback(thread, "attempt to yield in reactive scope")
-    end
-
-    return run_ok, result
-end
-
 local function get_scope(): Node<unknown>?
-    return scopes[scopes.n]
+    local stack = sync_stack.n == 0 and thread_stacks[coroutine.running()] or sync_stack
+    return stack[stack.n]
 end
 
 local function assert_stable_scope(): Node<unknown>
@@ -74,15 +65,17 @@ local function push_child<T>(parent: SourceNode<any>, child: Node<any>)
 end
 
 local function push_scope<T>(node: Node<T>)
-    local n = scopes.n + 1
-    scopes.n = n
-    scopes[n] = node
+    local stack = sync_stack.n == 0 and thread_stacks[coroutine.running()] or sync_stack
+    local n = stack.n + 1
+    stack.n = n
+    stack[n] = node
 end
 
 local function pop_scope()
-    local n = scopes.n
-    scopes.n = n - 1
-    scopes[n] = nil
+    local stack = sync_stack.n == 0 and thread_stacks[coroutine.running()] or sync_stack
+    local n = stack.n
+    stack.n = n - 1
+    stack[n] = nil
 end
 
 local function push_cleanup<T>(node: Node<T>, cleanup: Node<T> | () -> ())
@@ -113,13 +106,12 @@ local function flush_cleanups<T>(node: Node<T>)
     local cleanups = node.cleanups :: any
     if cleanups == NO_SPARSE then return end
 
-    local safe = (if flags.strict then ycall else pcall :: any)
     for i = #cleanups, 1, -1 do
         local fn = cleanups[i]
         if type(fn) == 'function' then 
-            local ok, err = safe(fn)
-            if not ok then error(`cleanup error: {err}`, 0) end
-            continue
+            local ok, err = xpcall(fn, efn, node)
+            if ok then continue end
+            error(`cleanup error: {err}`, 0)
         end
 
         -- let gc cook owner/cleanups
@@ -131,7 +123,7 @@ local function flush_cleanups<T>(node: Node<T>)
 end
 
 local function destroy<T>(node: Node<T>)
-    if flags.strict and table.find(scopes, node) then
+    if flags.strict and table.find(sync_stack, node) then
         error("attempt to destroy an active scope", 0)
     end
 
@@ -149,31 +141,8 @@ local evaluating_depth = 1
 local head = 0
 local tail = 0
 
-local function evaluate_node<T>(node: Node<T>)
-    if flags.strict and table.find(scopes, node) then
-        evaluating_depth = 1
-        tail = 0
-        head = 0
-        error("a scope, that should rerun due to the update of a source, is already active", 0)
-    end
-    local cur_value = node.cache
-    node.depth = if node.owner then node.owner.depth + 1 else 1
-
-    flush_cleanups(node)
-    
-    push_scope(node)
-    local ok, new_value = (if flags.strict then ycall else pcall :: any)(node.effect :: (T) -> T, cur_value)
-    pop_scope()
-    
-    if not ok then
-        evaluating_depth = 1
-        tail = 0
-        head = 0
-        error(`effect error stacktrace\n{new_value :: string}`, 0)
-    end
-
-    node.cache = new_value :: T
-    return cur_value ~= new_value
+local function get_update_queue_length()
+    return tail
 end
 
 local function queue_children_for_update<T>(node: SourceNode<T>)
@@ -184,8 +153,58 @@ local function queue_children_for_update<T>(node: SourceNode<T>)
     end
 end
 
-local function get_update_queue_length()
-    return tail
+local _update_descendants
+local function run<T>(node: Node<T>)
+    local function eval()
+        local yielded = node.pending
+        local cur_ok = node.ok
+
+        local cur_value = node.cache
+        local new_value = (node :: any).effect(cur_value)
+
+        node.ok = true
+        node.cache = new_value :: T
+        node.pending = NO_SPARSE
+
+        if new_value == cur_value and cur_ok == true then return end
+        if yielded then _update_descendants(node) else queue_children_for_update(node) end
+    end
+    local function on_err(err)
+        local yielded = node.pending
+        local cur_value = node.cache
+        local cur_ok = node.ok
+
+        node.ok = false
+        node.cache = efn(err) :: any
+        node.pending = NO_SPARSE
+
+        if node.cache == cur_value and cur_ok == false then return end
+        if yielded then _update_descendants(node) else queue_children_for_update(node) end
+    end
+
+    push_scope(node)
+    local thread = coroutine.create(xpcall)
+    coroutine.resume(thread, eval, on_err)
+    pop_scope()
+
+    if coroutine.status(thread) ~= 'suspended' then return end
+    thread_stacks[thread] = { n = 1, node }
+    node.pending = thread
+end
+
+local function evaluate_node<T>(node: Node<T>)
+    if flags.strict and table.find(sync_stack, node) then
+        node.ok = false
+        node.cache = efn("a scope, that should rerun due to the update of a source, is already active") :: any
+        return
+    end
+
+    flush_cleanups(node)
+
+    if node.pending then coroutine.close(node.pending) end
+    node.depth = if node.owner then node.owner.depth + 1 else 1
+
+    run(node)
 end
 
 local function flush_update_queue(from: number)
@@ -208,8 +227,8 @@ local function flush_update_queue(from: number)
             if node.depth > evaluating_depth then
                 tail += 1
                 update_queue[tail] = node
-            elseif evaluate_node(node) then
-                queue_children_for_update(node)
+            else
+                evaluate_node(node)
             end
         end
 
@@ -229,6 +248,7 @@ local function update_descendants<T>(root: SourceNode<T>)
     if flags.batch then return end
     flush_update_queue(from)
 end
+_update_descendants = update_descendants
 
 local function push_parent<T>(parent: SourceNode<T>)
     local scope = get_scope()
@@ -248,6 +268,9 @@ local function create_node<T>(owner: NO_SPARSE | Node<any>, effect: NO_SPARSE | 
         cache = value,
         effect = effect,
         cleanups = NO_SPARSE,
+
+        pending = NO_SPARSE,
+        ok = true,
 
         context = NO_SPARSE,
 
@@ -298,7 +321,7 @@ return table.freeze {
     flush_update_queue = flush_update_queue,
     get_update_queue_length = get_update_queue_length,
     set_context = set_context,
-    scopes = scopes,
+    scopes = sync_stack,
 
     q = update_queue
 }
