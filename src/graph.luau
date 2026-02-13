@@ -1,5 +1,8 @@
 local flags = require "./flags"
 
+type NO_SPARSE = false  -- represents nil, but is actually `false` to dont sparse the table
+local NO_SPARSE: NO_SPARSE = false
+
 export type SourceNode<T> = {
     cache: T,
     depth: number,
@@ -8,13 +11,13 @@ export type SourceNode<T> = {
 
 export type Node<T> =  {
     cache: T,
-    effect:  ((T) -> T) | false,
-    cleanups: { () -> () } | false,
+    effect: NO_SPARSE | (T) -> T,
+    cleanups: NO_SPARSE | { () -> () },
 
-    context: { [number]: unknown } | false,
+    context: NO_SPARSE | { [number]: unknown },
 
-    owned: { Node<T> } | false,
-    owner: Node<T> | false,
+    owned: NO_SPARSE | { Node<T> },
+    owner: NO_SPARSE | Node<T>,
 
     depth: number,
     parents: { SourceNode<T> },
@@ -109,11 +112,11 @@ local function find_and_swap_pop<T>(t: { T }, v: T)
     t[n] = nil
 end
 
-local function unparent<T>(node: Node<T>)
-    local parents = node.parents
+local function unparent<T>(child: Node<T>)
+    local parents = child.parents
 
     for i, parent in parents do
-        find_and_swap_pop(parent, node)
+        find_and_swap_pop(parent, child)
         parents[i] = nil
     end
 end
@@ -144,15 +147,17 @@ local function destroy_owned<T>(node: Node<T>)
     end
 end
 
-local update_queue = { n = 0 } :: { n: number, [number]: Node<any> }
+-- double pointer queue
+local update_queue = {} :: { Node<any> | NO_SPARSE }
 local evaluating_depth = 1
-local i = 0
+local head = 0
+local tail = 0
 
 local function evaluate_node<T>(node: Node<T>)
     if flags.strict and table.find(scopes, node) then
         evaluating_depth = 1
-        update_queue.n = 0
-        i = 0
+        tail = 0
+        head = 0
         error("a scope, that should rerun due to the update of a source, is already active", 0)
     end
     local cur_value = node.cache
@@ -167,8 +172,8 @@ local function evaluate_node<T>(node: Node<T>)
     
     if not ok then
         evaluating_depth = 1
-        update_queue.n = 0
-        i = 0
+        tail = 0
+        head = 0
         error(`effect error stacktrace\n{new_value :: string}`, 0)
     end
 
@@ -177,84 +182,82 @@ local function evaluate_node<T>(node: Node<T>)
 end
 
 local function queue_children_for_update<T>(node: SourceNode<T>)
-    local i = update_queue.n
     while node[1] do
-        i += 1
-        update_queue[i] = node[1]
+        tail += 1
+        update_queue[tail] = node[1]
         unparent(node[1])
     end
-    update_queue.n = i
 end
 
 local function get_update_queue_length()
-    return update_queue.n
+    return tail
 end
 
 local function flush_update_queue(from: number)
-    if from == update_queue.n then return end
+    if from == tail then return end
 
     local prev_depth = evaluating_depth
-    local prev_head = i
+    local prev_head = head
 
-    local depth_end = update_queue.n
-    i = from + 1
-    
-    while i <= update_queue.n do
-        if depth_end < i then
+    local depth_end = tail
+    head = from + 1
+
+    while head <= tail do
+        if depth_end < head then
             evaluating_depth += 1
-            depth_end = update_queue.n
+            depth_end = tail
         end
 
-        local node = update_queue[i] :: Node<any>
+        local node = update_queue[head] :: Node<any>
         if node and node.owner then
             if node.depth > evaluating_depth then
-                update_queue.n += 1
-                update_queue[update_queue.n] = node
+                tail += 1
+                update_queue[tail] = node
             elseif evaluate_node(node) then
                 queue_children_for_update(node)
             end
         end
 
-        update_queue[i] = false :: any
-        i += 1
+        update_queue[head] = NO_SPARSE
+        head += 1
     end
-    
+
     evaluating_depth = prev_depth
-    i = prev_head
-    update_queue.n = from
+    head = prev_head
+    tail = from
 end
 
 local function update_descendants<T>(root: SourceNode<T>)
-    local n0 = update_queue.n
+    local from = tail
     queue_children_for_update(root)
 
     if flags.batch then return end
-    flush_update_queue(n0)
+    flush_update_queue(from)
 end
 
-local function push_scope_as_child_of<T>(node: SourceNode<T>)
+local function push_parent<T>(parent: SourceNode<T>)
     local scope = get_scope()
-    if scope == nil or scope.effect == false then return end
+    if scope == nil or scope.effect == NO_SPARSE then return end
 
-    if scope.depth <= node.depth then
-        scope.depth = node.depth+1
-        if evaluating_depth <= node.depth then
-            flush_update_queue(i)
+    if scope.depth <= parent.depth then
+        scope.depth = parent.depth+1
+        if evaluating_depth <= parent.depth then
+            flush_update_queue(head)
         end
     end
-    push_child(node, scope)
+    push_child(parent, scope)
 end
 
-local function create_node<T>(owner: false | Node<any>, effect: false | (T) -> T, value: T): Node<T>
+local function create_node<T>(owner: NO_SPARSE | Node<any>, effect: NO_SPARSE | (T) -> T, value: T): Node<T>
     local node: Node<T> = {
         cache = value,
         effect = effect,
-        cleanups = false,
+        cleanups = NO_SPARSE,
 
-        context = false,
+        context = NO_SPARSE,
 
         owner = owner,
-        owned = false,
+        owned = NO_SPARSE,
 
         parents = {},
         depth = if owner then owner.depth + 1 else 1,
@@ -296,7 +299,7 @@ return table.freeze {
     push_cleanup = push_cleanup,
     destroy = destroy,
     flush_cleanups = flush_cleanups,
-    push_scope_as_child_of = push_scope_as_child_of,
+    push_parent = push_parent,
     update_descendants = update_descendants,
     push_child = push_child,
     create_node = create_node,
