@@ -26,21 +26,19 @@ export type Node<T> =  {
     [number]: Node<T> -- children
 }
 
+local loudy_resume_thread: (thread,...any) -> () = if game then task.spawn else coroutine.resume
+
 type scope_stack = { [number]: Node<any>, n: number }
 local thread_stacks: { [thread]: scope_stack } = {}
 local sync_stack: scope_stack = { n = 0 }
 
-local function efn(err: string)
-    local trace = debug.traceback(err, 2)
+local function fancy_backtrace(err: string)
+	local trace = debug.traceback(err, 3)
+        :gsub("^([^\n]+)\n([^\n]+)\n(.*)", function(msg, first, trace)
+            return `{first}: {msg}\n{trace}`
+        end :: any)
 
-    if string.find(err, "^effect error stacktrace") then -- if effect error is nested
-        trace = string.gsub("    " .. trace, "\n", function() -- indent entire error
-            return "\n    "
-        end)
-    end
-
-    trace ..= "\nsource update stacktrace:"
-return trace
+    return trace
 end
 
 local function get_scope(): Node<unknown>?
@@ -109,7 +107,7 @@ local function flush_cleanups<T>(node: Node<T>)
     for i = #cleanups, 1, -1 do
         local fn = cleanups[i]
         if type(fn) == 'function' then 
-            local ok, err = xpcall(fn, efn, node)
+            local ok, err = xpcall(fn, fancy_backtrace, node)
             if ok then continue end
             error(`cleanup error: {err}`, 0)
         end
@@ -163,18 +161,18 @@ local function handle_error(err)
     local yielded = node.pending
 
     node.ok = false
-    node.cache = efn(err) :: any
+    node.cache = fancy_backtrace(err) :: any
     node.pending = NO_SPARSE
 
     if node.cache == cur_value and cur_ok == false then return end
     if yielded then _update_descendants(node) else queue_children_for_update(node) end
 
-    error(err)
+    return node.cache
 end
 
 local free_worker: thread?
 local function run_node_loop<T>(node: Node<T>)
-    xpcall(function()
+    local success, err = xpcall(function()
         local worker = coroutine.running()
         while thread_stacks[worker] == nil do
             free_worker = worker
@@ -197,6 +195,8 @@ local function run_node_loop<T>(node: Node<T>)
             if yielded then _update_descendants(node) else queue_children_for_update(node) end
         end
     end, handle_error)
+    
+    if not success then error(err, 0) end
 end
 local function new_worker()
     local thread = coroutine.create(run_node_loop)
@@ -208,7 +208,7 @@ local function run<T>(node: Node<T>)
     push_scope(node)
 
     local worker = free_worker or new_worker()
-    coroutine.resume(worker, node)
+    loudy_resume_thread(worker, node)
 
     pop_scope()
     if free_worker == worker then return end
@@ -220,7 +220,7 @@ end
 local function evaluate_node<T>(node: Node<T>)
     if flags.strict and table.find(sync_stack, node) then
         node.ok = false
-        node.cache = efn("a scope, that should rerun due to the update of a source, is already active") :: any
+        node.cache = fancy_backtrace("a scope, that should rerun due to the update of a source, is already active") :: any
         return
     end
 
