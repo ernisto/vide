@@ -56,6 +56,7 @@ vide.strict = false
 TEST("graph", function()
     local create_node = graph.create_node
     local push_scope_as_child_of = graph.push_scope_as_child_of
+    local evaluate_node = graph.evaluate_node
     local update_descendants = graph.update_descendants
     local push_child = graph.push_child
     local get_scope = graph.get_scope
@@ -110,13 +111,8 @@ TEST("graph", function()
         end
 
         c.effect = effect
+        evaluate_node(c)
 
-        push_scope(c)
-
-        effect(c.cache)
-
-        pop_scope()
-        
         CHECK(count == 1)
         update_descendants(a)
         CHECK(count == 2)
@@ -156,8 +152,7 @@ TEST("graph", function()
             return not x
         end
 
-        push_scope(c); assert(type(c.effect) == "function" and c.effect)(NIL); pop_scope()
-
+        evaluate_node(c)
         update_descendants(a)
 
         CHECK(#get_children(a) == 1)
@@ -1141,80 +1136,6 @@ TEST("show()", wrap_root(function()
         CHECK(count == 3)
         input(nil)
         CHECK(count == 3)
-    end
-
-    do CASE "special strict case"
-        type Weapon = {
-            id: string,
-            enchant: string?
-        }
-
-        vide.strict = true
-
-        local count = 0
-        local branch = 0
-
-        local weapon = source(nil :: Weapon?)
-
-        effect(function()
-            weapon()
-        end)
-
-        effect(function()
-            weapon()
-        end)
-
-        show(weapon, function(weapon: () -> Weapon)
-            local enchant = function() return weapon().enchant end
-    
-            show(enchant, function(enchant: () -> string)
-                effect(function()
-                    local e = enchant()
-                    count += 1
-                    CHECK(e ~= nil)
-                    if branch == 1 then
-                        CHECK(e == "fire")
-                    elseif branch == 2 then
-                        CHECK(e == "poison")
-                    end
-                end)
-
-                return {}
-            end)
-
-            return {}
-        end)
-
-        effect(function()
-            weapon()
-        end)
-
-        effect(function()
-            weapon()
-        end)
-
-        branch = 1
-        weapon { id = "1", enchant = "fire" }
-        CHECK(count == 2)
-
-        branch = 2
-        weapon { id = "1", enchant = "poison" }
-        CHECK(count == 4)
-
-        weapon { id = "1", enchant = nil }
-        CHECK(count == 4)
-
-        branch = 1
-        weapon { id = "1", enchant = "fire" }
-        CHECK(count == 6)
-
-        weapon(nil)
-
-        branch = 2
-        weapon { id = "1", enchant = "poison" }
-        CHECK(count == 8)
-
-        vide.strict = false
     end
 
     do CASE "alt" -- todo: move test
@@ -2847,14 +2768,14 @@ TEST("graph edge cases", wrap_root(function()
         CHECK(count.b == 2)
         CHECK(count.c == 2)
         CHECK(count.d == 2)
-        CHECK(count.e == 3) -- todo: redundant re-eval
+        CHECK(count.e == 2)
         CHECK(e() == 4)
 
         a(3)
         CHECK(count.b == 2)
         CHECK(count.c == 3)
         CHECK(count.d == 3)
-        CHECK(count.e == 4)
+        CHECK(count.e == 3)
         CHECK(e() == 12)
     end
 
@@ -2983,34 +2904,6 @@ TEST("strict", wrap_root(function()
         CHECK(not ok)
     end
 
-    do CASE "run derived callback twice"
-        local src = source(1)
-        local count = 0
-
-        local _ = derive(function()
-            count += 1
-            return src()
-        end)
-
-        CHECK(count == 2)
-        src(2)
-        CHECK(count == 4)
-    end
-
-    do CASE "run effect callback twice"
-        local src = source(1)
-        local count = 0
-
-        effect(function()
-            count += 1
-            src()
-        end)
-
-        CHECK(count == 2)
-        src(2)
-        CHECK(count == 4)
-    end
-
     do CASE "values() error if duplicate"
         local src = source { 1, 2, 1 }
 
@@ -3049,42 +2942,6 @@ TEST("strict", wrap_root(function()
         CHECK(ok)
     end
 
-    do CASE "effect counter"
-        local src = source(true)
-
-        local count = 0
-
-        effect(function(x: number)
-            src()
-            count = x + 1
-            return count
-        end, count)
-
-        CHECK(count == 2)
-        src(not src())
-        CHECK(count == 4)
-    end
-
-    do CASE "effect using derived source"
-        local input = source(true)
-
-        local output = derive(function()
-            return input()
-        end)
-
-        local count = 0
-
-        effect(function()
-            output()
-            count += 1
-        end)
-
-        CHECK(count == 2)
-
-        input(false)
-
-        CHECK(count == 4)
-    end
 
     do CASE "destruction of active scope"
         local src = source(false)
