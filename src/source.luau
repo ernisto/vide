@@ -2,6 +2,7 @@ local graph = require "./graph"
 type Node<T> = graph.Node<T>
 local create_source_node = graph.create_source_node
 local push_parent = graph.push_parent
+local push_child = graph.push_child
 local update_descendants = graph.update_descendants
 
 export type Source<T> = (() -> T) & ((value: T) -> T)
@@ -21,6 +22,7 @@ local function source<T>(initial_value: T): Source<T>
         end
 
         node.cache = v
+        push_child(node)
         update_descendants(node)
         return v
     end

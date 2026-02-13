@@ -59,11 +59,6 @@ local function assert_stable_scope(): Node<unknown>
     return scope
 end
 
-local function push_child<T>(parent: SourceNode<any>, child: Node<any>)
-    table.insert(parent, child)
-    table.insert(child.parents, parent)
-end
-
 local function push_scope<T>(node: Node<T>)
     local stack = sync_stack.n == 0 and thread_stacks[coroutine.running()] or sync_stack
     local n = stack.n + 1
@@ -278,6 +273,18 @@ local function update_descendants<T>(root: SourceNode<T>)
 end
 _update_descendants = update_descendants
 
+local function link_parent<T>(parent: SourceNode<any>, child: Node<any>)
+    table.insert(parent, child)
+    table.insert(child.parents, parent)
+end
+local function push_child<T>(child: SourceNode<T>)
+    local scope = get_scope()
+    if scope == nil or scope.effect == NO_SPARSE then return end
+
+    if child.depth <= scope.depth then
+        child.depth = scope.depth+1
+    end
+end
 local function push_parent<T>(parent: SourceNode<T>)
     local scope = get_scope()
     if scope == nil or scope.effect == NO_SPARSE then return end
@@ -288,7 +295,7 @@ local function push_parent<T>(parent: SourceNode<T>)
             flush_update_queue(head)
         end
     end
-    push_child(parent, scope)
+    link_parent(parent, scope)
 end
 
 local function create_node<T>(owner: NO_SPARSE | Node<any>, effect: NO_SPARSE | (T) -> T, value: T): Node<T>
@@ -341,8 +348,9 @@ return table.freeze {
     destroy = destroy,
     flush_cleanups = flush_cleanups,
     push_parent = push_parent,
-    update_descendants = update_descendants,
     push_child = push_child,
+    update_descendants = update_descendants,
+    link_parent = link_parent,
     create_node = create_node,
     create_source_node = create_source_node,
     get_children = get_children,
