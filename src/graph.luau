@@ -2,6 +2,7 @@ local flags = require "./flags"
 
 export type SourceNode<T> = {
     cache: T,
+    depth: number,
     [number]: Node<T>
 }
 
@@ -15,6 +16,7 @@ export type Node<T> =  {
     owned: { Node<T> } | false,
     owner: Node<T> | false,
 
+    depth: number,
     parents: { SourceNode<T> },
     [number]: Node<T> -- children
 }
@@ -59,8 +61,6 @@ local function assert_stable_scope(): Node<unknown>
     if not scope then
         local caller_name = debug.info(2, "n")
         return error(`cannot use {caller_name}() outside a stable or reactive scope`, 0)
-    elseif scope.effect then
-        error("cannot create a new reactive scope inside another reactive scope", 0)
     end
 
     return scope
@@ -145,54 +145,35 @@ local function destroy_owned<T>(node: Node<T>)
 end
 
 local update_queue = { n = 0 } :: { n: number, [number]: Node<any> }
+local evaluating_depth = 1
+local i = 0
 
 local function evaluate_node<T>(node: Node<T>)
-    if flags.strict then
-        if table.find(scopes, node) then
-            error("a scope, that should rerun due to the update of a source, is already active", 0)
-        end
-
-        local initial_value = node.cache
-
-        for i = 1, 2 do
-            local cur_value = node.cache
-
-            flush_cleanups(node)
-            destroy_owned(node)
-    
-            push_scope(node)
-            local ok, new_value = ycall(node.effect :: (T) -> T, cur_value)
-            pop_scope()
-            
-            if not ok then
-                table.clear(update_queue)
-                update_queue.n = 0
-                error(`effect error stacktrace\n{new_value :: string}`, 0)
-            end
-
-            node.cache = new_value :: T
-        end
-
-        return initial_value ~= node.cache
-    else
-        local cur_value = node.cache
-
-        flush_cleanups(node)
-        destroy_owned(node)
-
-        push_scope(node)
-        local ok, new_value = pcall(node.effect :: (T) -> T, node.cache)
-        pop_scope()
-
-        if not ok then
-            table.clear(update_queue)
-            update_queue.n = 0
-            error(`effect error:\n{new_value}\n`, 0)
-        end
-    
-        node.cache = new_value
-        return cur_value ~= new_value
+    if flags.strict and table.find(scopes, node) then
+        evaluating_depth = 1
+        update_queue.n = 0
+        i = 0
+        error("a scope, that should rerun due to the update of a source, is already active", 0)
     end
+    local cur_value = node.cache
+    node.depth = if node.owner then node.owner.depth + 1 else 1
+
+    flush_cleanups(node)
+    destroy_owned(node)
+    
+    push_scope(node)
+    local ok, new_value = (if flags.strict then ycall else pcall :: any)(node.effect :: (T) -> T, cur_value)
+    pop_scope()
+    
+    if not ok then
+        evaluating_depth = 1
+        update_queue.n = 0
+        i = 0
+        error(`effect error stacktrace\n{new_value :: string}`, 0)
+    end
+
+    node.cache = new_value :: T
+    return cur_value ~= new_value
 end
 
 local function queue_children_for_update<T>(node: SourceNode<T>)
@@ -210,19 +191,36 @@ local function get_update_queue_length()
 end
 
 local function flush_update_queue(from: number)
-    local i = from + 1
-    while i <= update_queue.n do
-        local node = update_queue[i]
-        --assert(node.effect)
+    if from == update_queue.n then return end
 
-        if node.owner and evaluate_node(node) then
-            queue_children_for_update(node)
+    local prev_depth = evaluating_depth
+    local prev_head = i
+
+    local depth_end = update_queue.n
+    i = from + 1
+    
+    while i <= update_queue.n do
+        if depth_end < i then
+            evaluating_depth += 1
+            depth_end = update_queue.n
+        end
+
+        local node = update_queue[i] :: Node<any>
+        if node and node.owner then
+            if node.depth > evaluating_depth then
+                update_queue.n += 1
+                update_queue[update_queue.n] = node
+            elseif evaluate_node(node) then
+                queue_children_for_update(node)
+            end
         end
 
         update_queue[i] = false :: any
         i += 1
     end
     
+    evaluating_depth = prev_depth
+    i = prev_head
     update_queue.n = from
 end
 
@@ -231,29 +229,20 @@ local function update_descendants<T>(root: SourceNode<T>)
     queue_children_for_update(root)
 
     if flags.batch then return end
-
-    local i = n0 + 1
-    while i <= update_queue.n do
-        local node = update_queue[i]
-        --assert(node.effect)
-
-        -- check if node is still owned in case destroyed after queued
-        if node.owner and evaluate_node(node) then
-            queue_children_for_update(node)
-        end
-
-        update_queue[i] = false :: any -- false instead of nil to avoid sparse
-        i += 1
-    end
-
-    update_queue.n = n0
+    flush_update_queue(n0)
 end
 
 local function push_scope_as_child_of<T>(node: SourceNode<T>)
     local scope = get_scope()
-    if scope and scope.effect then -- do not track nodes with no effect
-        push_child(node, scope)
+    if scope == nil or scope.effect == false then return end
+
+    if scope.depth <= node.depth then
+        scope.depth = node.depth+1
+        if evaluating_depth <= node.depth then
+            flush_update_queue(i)
+        end
     end
+    push_child(node, scope)
 end
 
 local function create_node<T>(owner: false | Node<any>, effect: false | (T) -> T, value: T): Node<T>
@@ -268,6 +257,7 @@ local function create_node<T>(owner: false | Node<any>, effect: false | (T) -> T
         owned = false,
 
         parents = {},
+        depth = if owner then owner.depth + 1 else 1,
     }
 
     if owner then
@@ -282,7 +272,7 @@ local function create_node<T>(owner: false | Node<any>, effect: false | (T) -> T
 end
 
 local function create_source_node<T>(value: T): SourceNode<T>
-    return { cache = value }
+    return { depth = 0, cache = value }
 end
 
 local function get_children<T>(node: Node<T>): { Node<unknown> }
