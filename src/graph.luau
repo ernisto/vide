@@ -12,11 +12,10 @@ export type SourceNode<T> = {
 export type Node<T> =  {
     cache: T,
     effect: NO_SPARSE | (T) -> T,
-    cleanups: NO_SPARSE | { () -> () },
+    cleanups: NO_SPARSE | { Node<T> | () -> () },
 
     context: NO_SPARSE | { [number]: unknown },
 
-    owned: NO_SPARSE | { Node<T> },
     owner: NO_SPARSE | Node<T>,
 
     depth: number,
@@ -86,22 +85,11 @@ local function pop_scope()
     scopes[n] = nil
 end
 
-local function push_cleanup<T>(node: Node<T>, cleanup: () -> ())
+local function push_cleanup<T>(node: Node<T>, cleanup: Node<T> | () -> ())
     if node.cleanups then
         table.insert(node.cleanups, cleanup)
     else
         node.cleanups = { cleanup }
-    end
-end
-
-local function flush_cleanups<T>(node: Node<T>)
-    if node.cleanups then
-        for _, fn in node.cleanups do
-            local ok, err: string? = xpcall(fn, debug.traceback)
-            if not ok then error(`cleanup error: {err}`, 0) end
-        end
-
-        table.clear(node.cleanups)
     end
 end
 
@@ -121,6 +109,27 @@ local function unparent<T>(child: Node<T>)
     end
 end
 
+local function flush_cleanups<T>(node: Node<T>)
+    local cleanups = node.cleanups :: any
+    if cleanups == NO_SPARSE then return end
+
+    local safe = (if flags.strict then ycall else pcall :: any)
+    for i = #cleanups, 1, -1 do
+        local fn = cleanups[i]
+        if type(fn) == 'function' then 
+            local ok, err = safe(fn)
+            if not ok then error(`cleanup error: {err}`, 0) end
+            continue
+        end
+
+        -- let gc cook owner/cleanups
+        flush_cleanups(fn)
+        unparent(fn)
+        fn.owner = NO_SPARSE
+    end
+    node.cleanups = NO_SPARSE
+end
+
 local function destroy<T>(node: Node<T>)
     if flags.strict and table.find(scopes, node) then
         error("attempt to destroy an active scope", 0)
@@ -129,22 +138,9 @@ local function destroy<T>(node: Node<T>)
     flush_cleanups(node)
     unparent(node)
     
-    if node.owner then
-        find_and_swap_pop(node.owner.owned :: { Node<T> }, node)
-        node.owner = false
-    end
-
-    if node.owned then
-        local owned = node.owned
-        while owned[1] do destroy(owned[1]) end
-    end
-end
-
-local function destroy_owned<T>(node: Node<T>)
-    if node.owned then
-        local owned = node.owned
-        while owned[1] do destroy(owned[1]) end
-    end
+    if node.owner == NO_SPARSE then return end
+    find_and_swap_pop(node.owner.cleanups :: { Node<T> }, node)
+    node.owner = NO_SPARSE
 end
 
 -- double pointer queue
@@ -164,7 +160,6 @@ local function evaluate_node<T>(node: Node<T>)
     node.depth = if node.owner then node.owner.depth + 1 else 1
 
     flush_cleanups(node)
-    destroy_owned(node)
     
     push_scope(node)
     local ok, new_value = (if flags.strict then ycall else pcall :: any)(node.effect :: (T) -> T, cur_value)
@@ -257,18 +252,13 @@ local function create_node<T>(owner: NO_SPARSE | Node<any>, effect: NO_SPARSE | 
         context = NO_SPARSE,
 
         owner = owner,
-        owned = NO_SPARSE,
 
         parents = {},
         depth = if owner then owner.depth + 1 else 1,
     }
 
     if owner then
-        if owner.owned then
-            table.insert(owner.owned, node)
-        else
-            owner.owned = { node }
-        end
+        push_cleanup(owner, node)
     end
 
     return node
