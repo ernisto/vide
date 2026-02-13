@@ -23,8 +23,7 @@ end
 local function ROOT_BENCH(name: string, fn: () -> ())
     vide.root(function(destroy)
         BENCH(name, fn)
-        return destroy
-    end)()
+    end)    -- reverse destroy order take so long to destroy, because of flush_cleanups > unparent > find_and_swap_pop > table.find
 end
 
 local N = 2^20
