@@ -103,6 +103,11 @@ local function unparent<T>(child: Node<T>)
 end
 
 local function flush_cleanups<T>(node: Node<T>)
+    if node.pending then
+        coroutine.close(node.pending)
+        node.pending = NO_SPARSE
+    end
+
     local cleanups = node.cleanups :: any
     if cleanups == NO_SPARSE then return end
 
@@ -154,42 +159,67 @@ local function queue_children_for_update<T>(node: SourceNode<T>)
 end
 
 local _update_descendants
+local function handle_error(err)
+    local stack = if sync_stack.n == 0 then thread_stacks[coroutine.running()] else sync_stack
+    local node = stack[1]
+    
+    local cur_ok = node.ok
+    local cur_value = node.cache
+    local yielded = node.pending
+
+    node.ok = false
+    node.cache = efn(err) :: any
+    node.pending = NO_SPARSE
+
+    if node.cache == cur_value and cur_ok == false then return end
+    if yielded then _update_descendants(node) else queue_children_for_update(node) end
+
+    error(err)
+end
+
+local free_worker: thread?
+local function run_node_loop<T>(node: Node<T>)
+    xpcall(function()
+        local worker = coroutine.running()
+        while thread_stacks[worker] == nil do
+            free_worker = worker
+
+            node = nil :: any   -- enable gc
+            node = coroutine.yield()
+            free_worker = nil
+
+            local cur_ok = node.ok
+            local cur_value = node.cache
+
+            local new_value = (node :: any).effect(cur_value)
+            local yielded = node.pending
+
+            node.ok = true
+            node.cache = new_value
+            node.pending = NO_SPARSE
+
+            if new_value == cur_value and cur_ok == true then continue end
+            if yielded then _update_descendants(node) else queue_children_for_update(node) end
+        end
+    end, handle_error)
+end
+local function new_worker()
+    local thread = coroutine.create(run_node_loop)
+    coroutine.resume(thread)
+    return thread
+end
+
 local function run<T>(node: Node<T>)
-    local function eval()
-        local yielded = node.pending
-        local cur_ok = node.ok
-
-        local cur_value = node.cache
-        local new_value = (node :: any).effect(cur_value)
-
-        node.ok = true
-        node.cache = new_value :: T
-        node.pending = NO_SPARSE
-
-        if new_value == cur_value and cur_ok == true then return end
-        if yielded then _update_descendants(node) else queue_children_for_update(node) end
-    end
-    local function on_err(err)
-        local yielded = node.pending
-        local cur_value = node.cache
-        local cur_ok = node.ok
-
-        node.ok = false
-        node.cache = efn(err) :: any
-        node.pending = NO_SPARSE
-
-        if node.cache == cur_value and cur_ok == false then return end
-        if yielded then _update_descendants(node) else queue_children_for_update(node) end
-    end
-
     push_scope(node)
-    local thread = coroutine.create(xpcall)
-    coroutine.resume(thread, eval, on_err)
-    pop_scope()
 
-    if coroutine.status(thread) ~= 'suspended' then return end
-    thread_stacks[thread] = { n = 1, node }
-    node.pending = thread
+    local worker = free_worker or new_worker()
+    coroutine.resume(worker, node)
+
+    pop_scope()
+    if free_worker == worker then return end
+
+    thread_stacks[worker] = { n = 1, node }
+    node.pending = worker
 end
 
 local function evaluate_node<T>(node: Node<T>)
@@ -200,8 +230,6 @@ local function evaluate_node<T>(node: Node<T>)
     end
 
     flush_cleanups(node)
-
-    if node.pending then coroutine.close(node.pending) end
     node.depth = if node.owner then node.owner.depth + 1 else 1
 
     run(node)
