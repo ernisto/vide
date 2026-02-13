@@ -681,9 +681,9 @@ TEST("cleanup()", wrap_root(function()
 
         CHECK(testkit.seq(queue, {}))
         src(2)
-        CHECK(testkit.seq(queue, { 1, 2 }))
+        CHECK(testkit.seq(queue, { 2, 1 }))
         src(3)
-        CHECK(testkit.seq(queue, { 1, 2, 1, 2 }))
+        CHECK(testkit.seq(queue, { 2, 1, 2, 1 }))
     end
 
     do CASE "cleanup objects"
