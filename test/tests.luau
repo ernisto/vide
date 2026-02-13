@@ -55,7 +55,7 @@ vide.strict = false
 
 TEST("graph", function()
     local create_node = graph.create_node
-    local push_scope_as_child_of = graph.push_scope_as_child_of
+    local push_parent = graph.push_parent
     local evaluate_node = graph.evaluate_node
     local update_descendants = graph.update_descendants
     local push_child = graph.push_child
@@ -86,8 +86,8 @@ TEST("graph", function()
 
         push_scope(c)
 
-        push_scope_as_child_of(a)
-        push_scope_as_child_of(b)
+        push_parent(a)
+        push_parent(b)
 
         pop_scope()
 
@@ -104,8 +104,8 @@ TEST("graph", function()
         local count = 0
 
         local function effect(x)
-            push_scope_as_child_of(a)
-            push_scope_as_child_of(b)
+            push_parent(a)
+            push_parent(b)
             count += 1
             return not x
         end
@@ -131,9 +131,9 @@ TEST("graph", function()
         function c.effect(x) c_cnt += 1; return not x end
         function d.effect(x) d_cnt += 1; return not x end
 
-        push_scope(b); push_scope_as_child_of(a); pop_scope()
-        push_scope(c); push_scope_as_child_of(a); pop_scope()
-        push_scope(d); push_scope_as_child_of(b); push_scope_as_child_of(c); pop_scope()
+        push_scope(b); push_parent(a); pop_scope()
+        push_scope(c); push_parent(a); pop_scope()
+        push_scope(d); push_parent(b); push_parent(c); pop_scope()
 
         update_descendants(a)
 
@@ -147,8 +147,8 @@ TEST("graph", function()
         local a, b, c = node(root), node(root), node(root)
 
         function c.effect(x)
-            push_scope_as_child_of(a)
-            push_scope_as_child_of(b)
+            push_parent(a)
+            push_parent(b)
             return not x
         end
 
@@ -186,10 +186,10 @@ TEST("graph", function()
         do push_scope(root) 
             clean "root"
             items_updated = node(root)
-            push_scope_as_child_of(items_updated) -- should not
+            push_parent(items_updated) -- should not
 
             do push_scope(items_updated)
-                push_scope_as_child_of(items)
+                push_parent(items)
 
                 do push_scope(root)
                     do push_scope(scope1)
@@ -198,7 +198,7 @@ TEST("graph", function()
 
                         do push_scope(bind1)
                             clean "bind1"
-                            push_scope_as_child_of(selected)
+                            push_parent(selected)
                         pop_scope() end
                     pop_scope() end
 
@@ -207,7 +207,7 @@ TEST("graph", function()
                         bind2 = node(scope2)
                         do push_scope(bind2)
                             clean "bind2"
-                            push_scope_as_child_of(selected)
+                            push_parent(selected)
                         pop_scope() end
                     pop_scope() end
                 pop_scope() end
