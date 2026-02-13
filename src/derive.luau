@@ -11,7 +11,7 @@ local function derive<T>(source: () -> T): () -> T
 
     return function()
         push_parent(node)
-        return node.cache
+        return if node.ok then node.cache else error(node.cache)
     end
 end
 
