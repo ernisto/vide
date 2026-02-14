@@ -2,6 +2,8 @@ assert(game, "when using vide outside of Roblox, require lib.luau instead")
 
 local vide = require(script.lib)
 
+export type read<T> = vide.read<T>
+export type Read<T> = vide.Read<T>
 export type source<T> = vide.source<T>
 export type Source<T> = vide.Source<T>
 export type context<T> = vide.context<T>
