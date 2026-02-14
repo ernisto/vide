@@ -133,11 +133,11 @@ setmetatable(vec6_to_type, invalid_type)
 local springs: { [SpringState<unknown>]: SourceNode<unknown> } = {}
 setmetatable(springs :: any, { __mode = "v" })
 
-local function spring<T>(source: () -> T, period: number?, damping_ratio: number?): (() -> T, SpringSettings<T>)
+local function spring<T>(source: () -> T, period: number?, damping_ratio: number?): ((T?) -> T, SpringSettings<T>)
     local owner = assert_stable_scope()
 
     -- https://en.wikipedia.org/wiki/Damping
-    local w_n = 2*math.pi / (period or 1)
+    local w_n = math.tau / (period or 1)
     local z = damping_ratio or 1
     local k = w_n^2
     local c_c = 2*w_n

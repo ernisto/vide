@@ -16,7 +16,7 @@ local function helper(obj: any)
         else error "cannot cleanup given object"
 end
 
-local function cleanup(value: unknown)
+local function cleanup<T>(value: T): T
     local scope = get_scope()
 
     if not scope then
@@ -28,16 +28,17 @@ local function cleanup(value: unknown)
     else
         push_cleanup(scope, helper(value))
     end
+    return value
 end
 
 type Destroyable = { destroy: (any) -> () } | { Destroy: (any) -> () }
 type Disconnectable = { disconnect: (any) -> () } | { Disconnect: (any) -> () }
 
 return cleanup ::
-    ( (callback: () -> ()) -> () ) &
-    ( (thread: thread) -> () ) &
-    ( (instance: Destroyable) -> () ) &
-    ( (connection: Disconnectable) -> () ) &
-    ( (instance: Instance) -> () ) &
-    ( (connection: RBXScriptConnection) -> () )
+    & ((callback: () -> ()) -> () -> ())
+    & ((thread: thread) -> thread)
+    & ((instance: Destroyable) -> Destroyable)
+    & ((connection: Disconnectable) -> Disconnectable)
+    & ((instance: Instance) -> Instance)
+    & ((connection: RBXScriptConnection) -> RBXScriptConnection)
 

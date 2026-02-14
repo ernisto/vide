@@ -7,10 +7,7 @@ local function changed<T>(property: string, callback: (T) -> ())
             callback((instance :: any)[property])
         end)
 
-        cleanup(function()
-            con:Disconnect()
-        end)
-
+        cleanup(con)
         callback((instance :: any)[property])
     end)
 end
