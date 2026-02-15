@@ -1,3 +1,4 @@
+local read = require "./read"
 local graph = require "./graph"
 type Node<T> = graph.Node<T>
 type SourceNode<T> = graph.SourceNode<T>
@@ -133,7 +134,7 @@ setmetatable(vec6_to_type, invalid_type)
 local springs: { [SpringState<unknown>]: SourceNode<unknown> } = {}
 setmetatable(springs :: any, { __mode = "v" })
 
-local function spring<T>(source: () -> T, period: number?, damping_ratio: number?): ((T?) -> T, SpringSettings<T>)
+local function spring<T>(source: read.Read<T>, period: number?, damping_ratio: number?): ((T?) -> T, SpringSettings<T>)
     local owner = assert_stable_scope()
 
     -- https://en.wikipedia.org/wiki/Damping
@@ -169,7 +170,7 @@ local function spring<T>(source: () -> T, period: number?, damping_ratio: number
     local output = create_source_node(false :: any)
 
     local function updater_effect()
-        local value = source()
+        local value = read(source)
         data.x1_123, data.x1_456 = type_to_vec6[typeof(value)](value)
         data.source_value = value
         springs[data] = output

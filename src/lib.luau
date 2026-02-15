@@ -23,6 +23,8 @@ local changed = require "./changed"
 local timeout, update_timeouts = require "./timeout"()
 local flags = require "./flags"
 
+export type Read<T> = read.Read<T>
+export type read<T> = Read<T>
 export type Source<T> = source.Source<T>
 export type source<T> = Source<T>
 export type Context<T> = context.Context<T>
@@ -82,8 +84,8 @@ local vide = {
     defer_nested_properties = (nil :: any) :: boolean,
 
     -- temporary
-    apply = function(instance: Instance)
-        return function(props: { [any]: any })
+    apply = function<T>(instance: T & Instance)
+        return function(props: { [any]: any }): T
             apply(instance, props)
             return instance
         end
