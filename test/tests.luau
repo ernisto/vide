@@ -511,7 +511,7 @@ TEST("derive()", wrap_root(function()
         local count = 0
         local a = source(0)
 
-        local destroy = mount(function()
+        local destroy = mount(function(): ()
             local _b = derive(function()
                 cleanup(function()
                     count += 1
@@ -639,7 +639,7 @@ TEST("cleanup()", wrap_root(function()
     do CASE "root cleanup"
         local count = 0
 
-        local destroy = mount(function()
+        local destroy = mount(function(): ()
             cleanup(function()
                 count += 1
             end)
