@@ -1,3 +1,4 @@
+local read = require "./read"
 local flags = require "./flags"
 local branch = require "./branch"
 local source = require "./source"
@@ -9,7 +10,7 @@ type Map<K, V> = { [K]: V }
 type Source<T> = () -> T
 
 local function values<K, V, Obj>(
-    input: Source<Map<K, V>>,
+    input: read.Read<Map<K, V>>,
     component: (V, Source<K>, Source<boolean>) -> (Obj, ...number)
 ): Source<Array<Obj>>
     local update_count = 0
@@ -36,7 +37,7 @@ local function values<K, V, Obj>(
     end
 
     effect(function()
-        local data = input()
+        local data = read(input)
 
         local count = update_count
         update_count += 1

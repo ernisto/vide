@@ -1,3 +1,4 @@
+local read = require "./read"
 local branch = require "./branch"
 local source = require "./source"
 local effect = require "./effect"
@@ -6,11 +7,11 @@ local timeout = require "./timeout" ()
 type Array<T> = { T }
 type Map<K, V> = { [K]: V }
 type Source<T> = () -> T
-type Component<T> = (Source<boolean>) -> (T, ...number)
+export type ReadComponent<T> = ((Source<boolean>) -> (T, ...number)) | T?
 
 local function switch_map<K, Obj>(
-    input: Source<K>,
-    map: Map<K, Component<Obj>>
+    input: read.Read<K>,
+    map: Map<K, ReadComponent<Obj>>
 ): Source<nil | Obj | Array<Obj>>
     local scopes = {} :: Map<K, {
         destroy: () -> (),
@@ -36,7 +37,7 @@ local function switch_map<K, Obj>(
     end
 
     effect(function()
-        local key: K? = input()
+        local key: K? = read(input)
 
         -- destroy (or queue destroy) all scopes not associated with the input key
         for k, scope in scopes do
@@ -73,14 +74,12 @@ local function switch_map<K, Obj>(
                 local component = map[key]
 
                 if component ~= nil then
-                    if type(component) ~= "function" then
-                        error("map must map a value to a function", 0)
-                    end
-
                     local present = source(false)
 
                     local delay = nil :: number?
                     local destroy, object = branch(function()
+                        if type(component) ~= 'function' then return component end
+
                         local object, t = component(present)
                         delay = t
                         return object
@@ -105,7 +104,7 @@ local function switch_map<K, Obj>(
     return output
 end
 
-local function switch<K, Obj>(input: Source<K>): (map: Map<K, Component<Obj>>) -> Source<nil | Obj | Array<Obj>>
+local function switch<K, Obj>(input: read.Read<K>): (map: Map<K, ReadComponent<Obj>>) -> Source<nil | Obj | Array<Obj>>
     return function(map)
         return switch_map(input, map)
     end
