@@ -41,6 +41,10 @@ local function fancy_backtrace(err: string)
     return trace
 end
 
+local function is_similar(a: any, b: any)
+    return a == b and (type(a) ~= "table" or table.isfrozen(a))
+end
+
 local function get_scope(): Node<unknown>?
     local stack = sync_stack.n == 0 and thread_stacks[coroutine.running()] or sync_stack
     return stack[stack.n]
@@ -191,7 +195,7 @@ local function run_node_loop<T>(node: Node<T>)
             node.cache = new_value
             node.pending = NO_SPARSE
 
-            if new_value == cur_value and cur_ok == true then continue end
+            if cur_ok and is_similar(cur_value, new_value) then continue end
             if yielded then _update_descendants(node) else queue_children_for_update(node) end
         end
     end, handle_error)
