@@ -137,7 +137,19 @@ local function destroy<T>(node: Node<T>)
     node.owner = NO_SPARSE
 end
 
+local function set_context<T>(node: Node<T>, key: number, value: unknown)
+    if node.context then
+        node.context[key] = value
+    else
+        node.context = { [key] = value }
+    end
+end
+
 -- double pointer queue
+local defered_roots = {} :: { Node<any> | NO_SPARSE }
+local defered_head = 0
+local defered_tail = 0
+
 local update_queue = {} :: { Node<any> | NO_SPARSE }
 local evaluating_depth = 1
 local head = 0
@@ -145,6 +157,10 @@ local tail = 0
 
 local function get_update_queue_length()
     return tail
+end
+
+local function get_children<T>(node: Node<T>): { Node<unknown> }
+    return { unpack(node) } :: { Node<any> }
 end
 
 local function queue_children_for_update<T>(node: SourceNode<T>)
@@ -268,12 +284,31 @@ local function flush_update_queue(from: number)
     tail = from
 end
 
+local function defer_update_descendants(node)
+    defered_tail += 1
+    defered_roots[defered_tail] = node
+end
 local function update_descendants<T>(root: SourceNode<T>)
+    if tail > 0 then warn('inner mutation detected') end
+
     local from = tail
     queue_children_for_update(root)
 
     if flags.batch then return end
     flush_update_queue(from)
+
+    while defered_head <= defered_tail do
+        root = defered_roots[defered_head] :: any
+
+        queue_children_for_update(root)
+        flush_update_queue(from)
+        
+        defered_roots[defered_head] = NO_SPARSE
+        defered_head += 1
+    end
+
+    defered_head = 0
+    defered_tail = 0
 end
 _update_descendants = update_descendants
 
@@ -282,24 +317,24 @@ local function link_parent<T>(parent: SourceNode<any>, child: Node<any>)
     table.insert(child.parents, parent)
 end
 local function push_child<T>(child: SourceNode<T>)
-    local scope = get_scope()
-    if scope == nil or scope.effect == NO_SPARSE then return end
+    local parent = get_scope()
+    if parent == nil or parent.effect == NO_SPARSE then return end
 
-    if child.depth <= scope.depth then
-        child.depth = scope.depth+1
+    if child.depth <= parent.depth then
+        child.depth = parent.depth+1
     end
 end
 local function push_parent<T>(parent: SourceNode<T>)
-    local scope = get_scope()
-    if scope == nil or scope.effect == NO_SPARSE then return end
+    local child = get_scope()
+    if child == nil or child.effect == NO_SPARSE then return end
 
-    if scope.depth <= parent.depth then
-        scope.depth = parent.depth+1
+    if child.depth <= parent.depth then
+        child.depth = parent.depth+1
         if evaluating_depth <= parent.depth then
             flush_update_queue(head)
         end
     end
-    link_parent(parent, scope)
+    link_parent(parent, child)
 end
 
 local function create_node<T>(owner: NO_SPARSE | Node<any>, effect: NO_SPARSE | (T) -> T, value: T): Node<T>
@@ -330,18 +365,6 @@ local function create_source_node<T>(value: T): SourceNode<T>
     return { depth = 0, cache = value }
 end
 
-local function get_children<T>(node: Node<T>): { Node<unknown> }
-    return { unpack(node) } :: { Node<any> }
-end
-
-local function set_context<T>(node: Node<T>, key: number, value: unknown)
-    if node.context then
-        node.context[key] = value
-    else
-        node.context = { [key] = value }
-    end
-end
-
 return table.freeze {
     push_scope = push_scope,
     pop_scope = pop_scope,
@@ -353,6 +376,7 @@ return table.freeze {
     flush_cleanups = flush_cleanups,
     push_parent = push_parent,
     push_child = push_child,
+    defer_update_descendants = defer_update_descendants,
     update_descendants = update_descendants,
     link_parent = link_parent,
     create_node = create_node,
