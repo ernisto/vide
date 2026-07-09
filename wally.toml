@@ -15,5 +15,6 @@ exclude = [
     ".luaurc",
 	"CHANGELOG.md",
 	"README.md",
+	"CLAUDE.md",
     "todo.md"
 ]
