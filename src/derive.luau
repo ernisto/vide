@@ -10,7 +10,7 @@ local function derive<T>(update: (prev: T | false) -> T): () -> T
 
     return function()
         push_parent(node)
-        return if node.ok then node.cache else error(node.cache)
+        return if node.ok then node.cache else error(`dependency {node} error:\n{node.cache.msg}`)
     end
 end
 
