@@ -658,7 +658,7 @@ TEST("async derive()", function()
 
         local c, _c
         c, _c = derive(function()
-            return assert(a())
+            return assert(a(), "save success and error")
         end)
 
         CHECK(_c.ok and _c.cache == 1)
@@ -667,10 +667,10 @@ TEST("async derive()", function()
         CHECK(success and val == 1)
 
         a(nil)
-        CHECK(not _c.ok and _c.cache:match('assertion failed'))
+        CHECK(not _c.ok and _c.cache.msg == "save success and error")
 
         local success2, err = pcall(c)
-        CHECK(not success2 and err:match('assertion failed'))
+        CHECK(not success2 and err.msg == "save success and error")
     end
 
     do CASE "capture scope when yield"

@@ -26,19 +26,55 @@ export type Node<T> =  {
     [number]: Node<T> -- children
 }
 
-local loudy_resume_thread: (thread,...any) -> () = if game then task.spawn else coroutine.resume
-
 type scope_stack = { [number]: Node<any>, n: number }
-local thread_stacks: { [thread]: scope_stack } = {}
+local thread_stacks: { [thread]: scope_stack } = setmetatable({} :: any, { __mode = 'k' })
 local sync_stack: scope_stack = { n = 0 }
 
-local function fancy_backtrace(err: string)
-	local trace = debug.traceback(err, 3)
-        :gsub("^([^\n]+)\n([^\n]+)\n(.*)", function(msg, first, trace)
-            return `{first}: {msg}\n{trace}`
-        end :: any)
+type stackframe = { script: string, line: number, name: string?, func: nil | () -> () }
+type fail = { nodetrace: { Node<any> }, msg: string, stacktrace: {stackframe} }
+local display: { [() -> ()]: string} = setmetatable({} :: any, { __mode = 'k' })
 
-    return trace
+local function encode_error(err: string, thread: thread?): fail
+    local nodes = if thread and thread_stacks[thread] then thread_stacks[thread] else sync_stack
+    local stacktrace = {}
+    local level = 3
+
+	while true do
+        local script, line, name, func = debug.info(level, 'slnf')
+        level += 1
+
+        if not script then break end
+        if script == '[C]' then continue end
+
+        local stackframe = { script = script, line = line, name = display[func] or name, func = func }
+        table.insert(stacktrace, stackframe)
+    end
+    return { msg = err:gsub(`^{stacktrace[1].script}:{stacktrace[1].line}: `, ''), nodetrace = nodes, stacktrace = stacktrace }
+end
+
+local function log_roblox_error(err: fail)
+    local LogService = game:GetService 'LogService'    
+    LogService:Log(Enum.MessageType.MessageError, err.msg)
+
+    for _,frame in err.stacktrace do
+        if frame.line < 0 then continue end
+
+        local txt = "Script '{script}', Line {line}"
+        if frame.name ~= '' then txt ..= " - Function {name}" end
+    
+        LogService:Log(Enum.MessageType.MessageInfo, txt, frame)
+    end
+end
+local function log_error(err: fail)
+    if game then return log_roblox_error(err) end
+    local txt = '\27[31m' .. err.msg .. '\27[39m\27[2m'
+
+    for _,frame in err.stacktrace do
+        if frame.line < 0 then continue end
+        txt ..= `\n{frame.script}:{frame.line}`
+        if frame.name ~= '' then txt ..= ` - {frame.name}` end
+    end
+    print(txt..'\27[0m')
 end
 
 local function is_similar(a: any, b: any)
@@ -111,7 +147,7 @@ local function flush_cleanups<T>(node: Node<T>)
     for i = #cleanups, 1, -1 do
         local fn = cleanups[i]
         if type(fn) == 'function' then 
-            local ok, err = xpcall(fn, fancy_backtrace, node)
+            local ok, err = xpcall(fn, encode_error, node)
             if ok then continue end
             error(`cleanup error: {err}`, 0)
         end
@@ -157,7 +193,8 @@ end
 
 local _update_descendants
 local function handle_error(err)
-    local stack = if sync_stack.n == 0 then thread_stacks[coroutine.running()] else sync_stack
+    local thread = coroutine.running()
+    local stack = if sync_stack.n == 0 then thread_stacks[thread] else sync_stack
     local node = stack[1]
     
     local cur_ok = node.ok
@@ -165,7 +202,7 @@ local function handle_error(err)
     local yielded = node.pending
 
     node.ok = false
-    node.cache = fancy_backtrace(err) :: any
+    node.cache = encode_error(err, thread)
     node.pending = NO_SPARSE
 
     if node.cache == cur_value and cur_ok == false then return end
@@ -176,8 +213,8 @@ end
 
 local free_worker: thread?
 local function run_node_loop<T>(node: Node<T>)
+    local worker = coroutine.running()
     local success, err = xpcall(function()
-        local worker = coroutine.running()
         while thread_stacks[worker] == nil do
             free_worker = worker
 
@@ -200,7 +237,8 @@ local function run_node_loop<T>(node: Node<T>)
         end
     end, handle_error)
     
-    if not success then error(err, 0) end
+    thread_stacks[worker] = nil
+    if not success then log_error(err) end
 end
 local function new_worker()
     local thread = coroutine.create(run_node_loop)
@@ -212,19 +250,23 @@ local function run<T>(node: Node<T>)
     push_scope(node)
 
     local worker = free_worker or new_worker()
-    loudy_resume_thread(worker, node)
+    coroutine.resume(worker, node)
 
     pop_scope()
     if free_worker == worker then return end
 
-    thread_stacks[worker] = { n = 1, node }
+    local new_stack = table.clone(sync_stack)
+    new_stack.n += 1
+    new_stack[new_stack.n] = node
+
+    thread_stacks[worker] = new_stack
     node.pending = worker
 end
 
 local function evaluate_node<T>(node: Node<T>)
     if flags.strict and table.find(sync_stack, node) then
         node.ok = false
-        node.cache = fancy_backtrace("a scope, that should rerun due to the update of a source, is already active") :: any
+        node.cache = encode_error("a scope that should rerun due to the update of a source, is already active") :: any
         return
     end
 
@@ -361,6 +403,7 @@ return table.freeze {
     flush_update_queue = flush_update_queue,
     get_update_queue_length = get_update_queue_length,
     set_context = set_context,
+    log_error = log_error,
     scopes = sync_stack,
 
     q = update_queue
