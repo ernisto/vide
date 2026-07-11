@@ -18,6 +18,7 @@ export type Node<T> =  {
     pending: NO_SPARSE | thread,
 
     context: NO_SPARSE | { [number]: unknown },
+    trace: { stackframe }?,
 
     owner: NO_SPARSE | Node<T>,
 
@@ -26,22 +27,23 @@ export type Node<T> =  {
     [number]: Node<T> -- children
 }
 
+type stackframe = { script: string, line: number, name: string?, func: nil | () -> () }
+type fail<T = any> = { msg: string, data: T, nodetrace: { Node<any> }, stacktrace: {stackframe} }
+local display: { [() -> ()]: string} = setmetatable({} :: any, { __mode = 'k' })
+
 type scope_stack = { [number]: Node<any>, n: number }
 local thread_stacks: { [thread]: scope_stack } = setmetatable({} :: any, { __mode = 'k' })
 local sync_stack: scope_stack = { n = 0 }
 
-type stackframe = { script: string, line: number, name: string?, func: nil | () -> () }
-type fail = { nodetrace: { Node<any> }, msg: string, stacktrace: {stackframe} }
-local display: { [() -> ()]: string} = setmetatable({} :: any, { __mode = 'k' })
+local internal_path = debug.info(1, 's'):sub(1, -6) -- remove .graph
 
-local function encode_error(err: string, thread: thread?): fail
-    local nodes = if thread and thread_stacks[thread] then thread_stacks[thread] else sync_stack
+local function tracestack(level: number, thread: thread?): {stackframe}
+    local _thread = thread or coroutine.running()
     local stacktrace = {}
-    local level = 3
 
 	while true do
-        local script, line, name, func = debug.info(level, 'slnf')
         level += 1
+        local script, line, name, func = debug.info(_thread, level, 'slnf')
 
         if not script then break end
         if script == '[C]' then continue end
@@ -49,32 +51,56 @@ local function encode_error(err: string, thread: thread?): fail
         local stackframe = { script = script, line = line, name = display[func] or name, func = func }
         table.insert(stacktrace, stackframe)
     end
-    return { msg = err:gsub(`^{stacktrace[1].script}:{stacktrace[1].line}: `, ''), nodetrace = nodes, stacktrace = stacktrace }
+    return stacktrace
+end
+local function encode_error<T>(err: T, thread: thread?): fail<T>
+    local nodetrace = if thread and thread_stacks[thread] then thread_stacks[thread] else sync_stack
+    local stacktrace = tracestack(3, thread)
+    return table.freeze {
+        data = err,
+        msg = tostring(err):gsub(`^{stacktrace[1].script}:{stacktrace[1].line}: `, ''),
+        nodetrace = table.freeze { unpack(nodetrace) },
+        stacktrace = table.freeze(stacktrace)
+    }
 end
 
-local function log_roblox_error(err: fail)
-    local LogService = game:GetService 'LogService'    
-    LogService:Log(Enum.MessageType.MessageError, err.msg)
+local function log_roblox_backtrace(trace)
+    local LogService = game:GetService 'LogService'
+    local trace_internal = flags.trace_internal
 
-    for _,frame in err.stacktrace do
+    for _,frame in trace do
         if frame.line < 0 then continue end
+		if not trace_internal and frame.script:sub(1, #internal_path) == internal_path then continue end
 
-        local txt = "Script '{script}', Line {line}"
-        if frame.name ~= '' then txt ..= " - Function {name}" end
-    
-        LogService:Log(Enum.MessageType.MessageInfo, txt, frame)
+        local func_name = " - Function {name}"
+        LogService:Log(Enum.MessageType.MessageInfo, `Script '\{script}', Line \{line}{if frame.name ~= '' then func_name else ''}`, frame)
+    end
+end
+local function log_roblox_error(err: fail)
+    local LogService = game:GetService 'LogService'
+
+    task.spawn(LogService.Log, LogService, Enum.MessageType.MessageError, err.msg)
+    log_roblox_backtrace(err.stacktrace)
+
+    LogService:Log(Enum.MessageType.MessageInfo, 'Created at')
+    log_roblox_backtrace(err.nodetrace[#err.nodetrace].trace)
+end
+
+local function log_backtrace(trace)
+    local trace_internal = flags.trace_internal
+    for _,frame in trace do
+        if frame.line < 0 then continue end
+		if not trace_internal and frame.script:sub(1, #internal_path) == internal_path then continue end
+
+        local func_name = if frame.name ~= '' then ` - {frame.name}` else ''
+        print(`\27[2m{frame.script}:{frame.line}{func_name}\27[0m`)
     end
 end
 local function log_error(err: fail)
     if game then return log_roblox_error(err) end
-    local txt = '\27[31m' .. err.msg .. '\27[39m\27[2m'
 
-    for _,frame in err.stacktrace do
-        if frame.line < 0 then continue end
-        txt ..= `\n{frame.script}:{frame.line}`
-        if frame.name ~= '' then txt ..= ` - {frame.name}` end
-    end
-    print(txt..'\27[0m')
+    print('\27[31m' .. err.msg .. '\27[0m')
+    log_backtrace(err.stacktrace)
 end
 
 local function is_similar(a: any, b: any)
@@ -353,6 +379,7 @@ local function create_node<T>(owner: NO_SPARSE | Node<any>, effect: NO_SPARSE | 
         pending = NO_SPARSE,
         ok = true,
 
+        trace = if flags.strict then tracestack(2) else nil,
         context = NO_SPARSE,
 
         owner = owner,
