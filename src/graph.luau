@@ -57,9 +57,9 @@ local function tracestack(level: number, thread: thread?): {stackframe}
     end
     return stacktrace
 end
-local function encode_error<T>(err: T, thread: thread?): fail<T>
+local function encode_error<T>(err: T, thread: thread?, level: number?): fail<T>
     local nodetrace = if thread and thread_stacks[thread] then thread_stacks[thread] else sync_stack
-    local stacktrace = tracestack(3, thread)
+    local stacktrace = tracestack(level or 3, thread)
     
     local frame = {
         data = err,
@@ -89,8 +89,11 @@ local function log_roblox_error(err: fail)
     task.spawn(LogService.Log, LogService, Enum.MessageType.MessageError, err.msg)
     log_roblox_backtrace(err.stacktrace)
 
+    local creator = err.nodetrace[#err.nodetrace]
+    if not (creator and creator.trace) then return end
+
     LogService:Log(Enum.MessageType.MessageInfo, 'Created at')
-    log_roblox_backtrace(err.nodetrace[#err.nodetrace].trace)
+    log_roblox_backtrace(creator.trace)
 end
 
 local function log_backtrace(trace)
@@ -225,17 +228,14 @@ local function queue_children_for_update<T>(node: SourceNode<T>)
 end
 
 local _update_descendants
-local function handle_error(err)
+local function handle_error(node: Node<any>, err)
     local thread = coroutine.running()
-    local stack = if sync_stack.n == 0 then thread_stacks[thread] else sync_stack
-    local node = stack[1]
-    
     local cur_ok = node.ok
     local cur_value = node.cache
     local yielded = node.pending
 
     node.ok = false
-    node.cache = encode_error(err, thread)
+    node.cache = encode_error(err, thread, 4)
     node.pending = NO_SPARSE
 
     if node.cache == cur_value and cur_ok == false then return end
@@ -247,11 +247,14 @@ end
 local free_worker: thread?
 local function run_node_loop<T>()
     local worker = coroutine.running()
+    local current: Node<T>
     local success, err = xpcall(function()
         while thread_stacks[worker] == nil do
             free_worker = worker
+            current = nil :: any -- idle worker must not pin last node (gc)
 
             local node: Node<T> = coroutine.yield()
+            current = node
             free_worker = nil
 
             local cur_ok = node.ok
@@ -267,16 +270,20 @@ local function run_node_loop<T>()
             if cur_ok and is_similar(cur_value, new_value) then continue end
             if yielded then _update_descendants(node) else queue_children_for_update(node) end
         end
-    end, handle_error)
-    
+    end, function(err)
+        return handle_error(current, err)
+    end)
+
     thread_stacks[worker] = nil
-    if not success then log_error(err) end
+    if not success and err then log_error(err) end
 end
 local function new_worker()
     local thread = coroutine.create(run_node_loop)
     coroutine.resume(thread)
     return thread
 end
+
+local timeout: number?
 
 local function run<T>(node: Node<T>)
     push_scope(node)
@@ -285,7 +292,7 @@ local function run<T>(node: Node<T>)
     coroutine.resume(worker, node)
 
     pop_scope()
-    if free_worker == worker then return end
+    if free_worker == worker or coroutine.status(worker) == 'dead' then return end
 
     local new_stack = table.clone(sync_stack)
     new_stack.n += 1
@@ -308,8 +315,31 @@ local function evaluate_node<T>(node: Node<T>)
     run(node)
 end
 
+-- nodes dropped by a timeout, rerun them on next flush or they stay detached forever
+-- TODO: defer unparent() wouldnt drop nodes by timeout
+local dropped_nodes: { Node<any> }?
+
+local function reset_queue(from: number, prev_depth: number, prev_head: number)
+    for i = from + 1, tail do
+        local node = update_queue[i]
+        if node and i >= head then
+            dropped_nodes = dropped_nodes or {}
+            table.insert(dropped_nodes :: any, node)
+        end
+
+        update_queue[i] = NO_SPARSE
+    end
+    evaluating_depth = prev_depth
+    head = prev_head
+    tail = from
+end
+
 local function flush_update_queue(from: number)
     if from == tail then return end
+
+    local owns_timeout = timeout == nil
+    local deadline = timeout or os.clock() + flags.eval_timeout
+    timeout = deadline
 
     local prev_depth = evaluating_depth
     local prev_head = head
@@ -318,6 +348,13 @@ local function flush_update_queue(from: number)
     head = from + 1
 
     while head <= tail do
+        if os.clock() > deadline then
+            reset_queue(from, prev_depth, prev_head)
+            if owns_timeout then timeout = nil end
+
+            error('eval timeout', 0)
+        end
+
         if depth_end < head then
             evaluating_depth += 1
             depth_end = tail
@@ -340,10 +377,19 @@ local function flush_update_queue(from: number)
     evaluating_depth = prev_depth
     head = prev_head
     tail = from
+
+    if owns_timeout then timeout = nil end
 end
 
 local function update_descendants<T>(root: SourceNode<T>)
     local from = tail
+    if dropped_nodes then
+        for _, node in dropped_nodes do
+            tail += 1
+            update_queue[tail] = node
+        end
+        table.clear(dropped_nodes)
+    end
     queue_children_for_update(root)
 
     if flags.batch then return end

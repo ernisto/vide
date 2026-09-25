@@ -10,7 +10,12 @@ local function derive<T>(update: (prev: T | false) -> T): () -> T
 
     return function()
         push_parent(node)
-        return if node.ok then node.cache else error(`dependency {node} error:\n{node.cache.msg}`, 2)
+        if node.ok then return node.cache end
+
+        local creator = node.trace and node.trace[2]
+        local identified = if creator then ` created at {creator.script}:{creator.line}` else ''
+
+        error(`derive{identified} errored:\n{node.cache}`, 2)
     end
 end
 

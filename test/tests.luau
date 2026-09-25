@@ -3053,6 +3053,106 @@ TEST("strict", wrap_root(function()
     end
 end))
 
+TEST("errors", wrap_root(function()
+    do CASE "derive error names creation site"
+        vide.strict = true -- creation trace only captured in strict
+        local created_line = debug.info(1, "l") + 1
+        local d = derive(function() error("boom") end)
+        vide.strict = false
+
+        local read_line = debug.info(1, "l") + 1
+        local ok, err = pcall(function() return d() end)
+
+        CHECK(not ok)
+        CHECK(string.find(err, `:{created_line} errored:\n`, 1, true))
+        CHECK(string.find(err, "boom", 1, true))
+        CHECK(string.find(err, `:{read_line}: derive created at`, 1, true)) -- level 2 blames the reader
+    end
+
+    do CASE "derive error without trace"
+        local d = derive(function() error("boom") end)
+        local ok, err = pcall(function() return d() end)
+
+        CHECK(not ok)
+        CHECK(string.find(err, "derive errored:\n", 1, true))
+        CHECK(string.find(err, "boom", 1, true))
+    end
+
+    do CASE "error encodes user error site"
+        local error_line = debug.info(1, "l") + 1
+        local n = graph.create_node(graph.get_scope() :: any, function() error("boom") end, false)
+        graph.evaluate_node(n)
+
+        CHECK(not n.ok)
+        CHECK(n.cache.msg == "boom")
+        CHECK(n.cache.stacktrace[1].line == error_line)
+        CHECK(n.pending == false) -- dead worker is not treated as yielded
+    end
+
+    do CASE "error marks erroring node, not outer scope"
+        local inner
+        local outer = graph.create_node(graph.get_scope() :: any, function()
+            inner = graph.create_node(graph.get_scope() :: any, function() error("inner") end, false)
+            graph.evaluate_node(inner)
+            return 1
+        end, false)
+        graph.evaluate_node(outer)
+
+        CHECK(outer.ok and outer.cache == 1)
+        CHECK(not inner.ok and inner.cache.msg == "inner")
+    end
+
+    do CASE "recover after error"
+        local a = source(0)
+        local d = derive(function()
+            if a() == 0 then error("zero") end
+            return a()
+        end)
+
+        CHECK(not pcall(d))
+        a(1)
+        CHECK(d() == 1)
+        a(0)
+        CHECK(not pcall(d))
+        a(2)
+        CHECK(d() == 2)
+    end
+
+    do CASE "eval timeout restores queue"
+        vide.eval_timeout = 0.1
+        local a = source(0)
+        local runs = 0
+
+        for _ = 1, 2 do
+            effect(function()
+                if a() == 1 then
+                    local t = os.clock()
+                    while os.clock() < t + 0.15 do end
+                end
+                runs += 1
+            end)
+        end
+        CHECK(runs == 2)
+
+        local ok, err = pcall(a, 1)
+        CHECK(not ok and err == "eval timeout")
+        CHECK(runs == 3) -- second effect never ran
+        CHECK(graph.get_update_queue_length() == 0)
+        vide.eval_timeout = 5
+
+        -- later flushes not poisoned
+        local b = source(0)
+        local b_runs = 0
+        effect(function() b(); b_runs += 1 end)
+        b(1)
+        CHECK(b_runs == 2)
+        CHECK(runs == 4) -- dropped effect reran on next flush
+
+        a(2)
+        CHECK(runs == 6) -- dropped effect still tracks `a`
+    end
+end))
+
 local ok = FINISH()
 if not ok then error("Tests failed", 0) end
 
