@@ -37,6 +37,10 @@ local sync_stack: scope_stack = { n = 0 }
 
 local internal_path = debug.info(1, 's'):sub(1, -6) -- remove .graph
 
+local function errmsg(err)
+    return `{err.stacktrace[1].script}:{err.stacktrace[1].line}: {err.msg}`
+end
+
 local function tracestack(level: number, thread: thread?): {stackframe}
     local _thread = thread or coroutine.running()
     local stacktrace = {}
@@ -56,12 +60,15 @@ end
 local function encode_error<T>(err: T, thread: thread?): fail<T>
     local nodetrace = if thread and thread_stacks[thread] then thread_stacks[thread] else sync_stack
     local stacktrace = tracestack(3, thread)
-    return table.freeze {
+    
+    local frame = {
         data = err,
         msg = tostring(err):gsub(`^{stacktrace[1].script}:{stacktrace[1].line}: `, ''),
         nodetrace = table.freeze { unpack(nodetrace) },
         stacktrace = table.freeze(stacktrace)
     }
+    setmetatable(frame, { __tostring = errmsg })
+    return table.freeze(frame) :: any
 end
 
 local function log_roblox_backtrace(trace)
@@ -238,14 +245,13 @@ local function handle_error(err)
 end
 
 local free_worker: thread?
-local function run_node_loop<T>(node: Node<T>)
+local function run_node_loop<T>()
     local worker = coroutine.running()
     local success, err = xpcall(function()
         while thread_stacks[worker] == nil do
             free_worker = worker
 
-            node = nil :: any   -- enable gc
-            node = coroutine.yield()
+            local node: Node<T> = coroutine.yield()
             free_worker = nil
 
             local cur_ok = node.ok
